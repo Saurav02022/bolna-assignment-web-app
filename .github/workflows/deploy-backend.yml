@@ -118,8 +118,7 @@ jobs:
             --allow-unauthenticated \
             --port 8080 \
             --service-account "${{ secrets.BACKEND_RUNTIME_SA }}" \
-            --set-env-vars "STORE_BACKEND=${STORE_BACKEND},GCP_PROJECT_ID=${GCP_PROJECT_ID},BOLNA_API_BASE_URL=${BOLNA_API_BASE_URL}" \
-            --update-env-vars "^|^CORS_ORIGINS=${CORS_ORIGINS}" \
+            --set-env-vars "^|^STORE_BACKEND=${STORE_BACKEND}|GCP_PROJECT_ID=${GCP_PROJECT_ID}|BOLNA_API_BASE_URL=${BOLNA_API_BASE_URL}|CORS_ORIGINS=${CORS_ORIGINS}" \
             --set-secrets "BOLNA_API_KEY=BOLNA_API_KEY:latest,BOLNA_AGENT_ID=BOLNA_AGENT_ID:latest,DEMO_RECIPIENT_NUMBER=DEMO_RECIPIENT_NUMBER:latest"
 
       - run: |

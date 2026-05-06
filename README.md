@@ -408,7 +408,7 @@ Runs on **every push and every pull request** (all branches): **pytest** and **t
 | `FRONTEND_CLOUD_RUN_SERVICE` | Frontend Cloud Run service name |
 | `STORE_BACKEND` | e.g. `firestore` on backend service |
 | `BOLNA_API_BASE_URL` | Bolna API host for backend container |
-| `CORS_ORIGINS` | Allowed browser origins (comma-separated; `gcloud` escaping handled in workflow for commas) |
+| `CORS_ORIGINS` | Allowed browser origins (comma-separated values; **`deploy-backend`** bundles them via `^|^` delimiter in `--set-env-vars`.) |
 | `BACKEND_API_URL` | FastAPI public URL for Next server-side fetches |
 | `NEXT_PUBLIC_BACKEND_API_URL` | Docker build-arg + frontend service env mirror |
 
