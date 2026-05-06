@@ -12,7 +12,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     async with store_lifespan() as store:
         app.state.store = store
-        from app.domains.orders.seed import seed_demo_orders
+        from app.domains.orders.seed import reconcile_placeholder_phones, seed_demo_orders
 
         await seed_demo_orders(store)
+        await reconcile_placeholder_phones(store)
         yield

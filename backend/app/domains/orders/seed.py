@@ -7,11 +7,15 @@ from app.core.settings import settings
 from app.domains.orders.mutator import new_order_record
 from app.domains.orders.schemas import OrderCreate
 
-_DEMO_PHONE_FALLBACK = "+910000000000"
+# Fallback when DEMO_RECIPIENT_NUMBER is unset — not a reachable number on Bolna trial.
+DEMO_PHONE_PLACEHOLDER = "+910000000000"
 
 
-def _demo_phone() -> str:
-    return settings.DEMO_RECIPIENT_NUMBER or _DEMO_PHONE_FALLBACK
+def _demo_phone_for_seed() -> str:
+    demo = settings.DEMO_RECIPIENT_NUMBER
+    if demo and demo.strip():
+        return demo.strip()
+    return DEMO_PHONE_PLACEHOLDER
 
 
 async def seed_demo_orders(store: Store) -> None:
@@ -21,7 +25,7 @@ async def seed_demo_orders(store: Store) -> None:
         return
 
     now = datetime.now(timezone.utc)
-    phone = _demo_phone()
+    phone = _demo_phone_for_seed()
 
     samples = [
         OrderCreate(
@@ -60,3 +64,21 @@ async def seed_demo_orders(store: Store) -> None:
             order_id=f"ORD-{1001 + index}",
         )
         await store.upsert_order(record)
+
+
+async def reconcile_placeholder_phones(store: Store) -> None:
+    """Backfill seeded placeholder contacts after DEMO_RECIPIENT_NUMBER is configured.
+
+    First boot may have seeded ``DEMO_PHONE_PLACEHOLDER`` into Firestore; later the same
+    env/secret carries the user's Bolna-verified handset. Idempotent."""
+    recipient = settings.DEMO_RECIPIENT_NUMBER
+    if not recipient or not recipient.strip():
+        return
+    recipient = recipient.strip()
+
+    orders = await store.list_orders()
+    now = datetime.now(timezone.utc)
+    for row in orders:
+        current = (row.get("phone") or "").strip()
+        if current == DEMO_PHONE_PLACEHOLDER:
+            await store.upsert_order({**row, "phone": recipient, "updated_at": now})
