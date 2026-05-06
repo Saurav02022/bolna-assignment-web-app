@@ -1,193 +1,361 @@
 # Bolna Full-Stack Assignment — RTO Shield Ops Console
 
-Voice-AI–assisted **pre-dispatch verification** for high–RTO-risk COD orders: operators trigger Bolna outbound calls from a production-style dashboard, ingest completion via webhook (with **idempotency** + **manual refresh**), persist state in **Firestore**, and ship on **Google Cloud Run** with **path-scoped CI/CD** and **Docker smoke tests** before every deploy.
+**RTO Shield** is a voice-AI-assisted **pre-dispatch verification** dashboard: operators trigger Bolna outbound calls against high–RTO-risk COD orders; the backend consumes **webhooks** and optional **execution polling**, persists state to **Firestore** in production, and the stack ships on **Google Cloud Run** with **Docker smoke tests** and **path-filtered CI/CD**.
 
-This repository is structured to pass the [Bolna Full Stack Assignment](Full%20Stack%20Assignment.md) bar: real enterprise use case, Bolna agent integration, full-stack product surface, demonstrable end-to-end flow, plus **GitHub + hosted URLs** for reviewers.
-
----
-
-## Table of contents
-
-- [Problem & outcome](#problem--outcome)
-- [End-to-end architecture](#end-to-end-architecture)
-- [Tech stack](#tech-stack)
-- [Repository layout](#repository-layout)
-- [Prerequisites](#prerequisites)
-- [Local development](#local-development)
-- [Configuration](#configuration)
-- [Testing](#testing)
-- [CI/CD & cloud deployment](#cicd--cloud-deployment)
-- [Operational notes (Bolna, Firestore, reliability)](#operational-notes-bolna-firestore-reliability)
-- [Assignment checklist](#assignment-checklist)
+This repo satisfies the brief in [`Full Stack Assignment.md`](Full%20Stack%20Assignment.md): enterprise use case, Bolna agent integration, concrete web workflow, reproducible submission (GitHub + deploy + recording pack).
 
 ---
 
-## Problem & outcome
+## Contents
 
-**Use case (summary):** Commerce teams lose margin when cash-on-delivery orders are confirmed at checkout but **reject or reschedule at the door** (RTO). A short **Hindi/English voice check** before dispatch reduces “surprise” handoffs and cleans the dispatch queue.
-
-**Workflow (operator view):**
-
-1. Orders land in the dashboard (seeded demo + Firestore in prod).
-2. Operator hits **Verify** → backend instructs Bolna to place the call (with context: SKU, amount, address).
-3. On call completion, Bolna posts a **webhook**; backend normalizes extraction, updates order status, stores transcript snapshot.
-4. If webhook payloads are incomplete, operator uses **Refresh** to pull **`GET /executions/{id}`** and reconcile.
-
-**Defined outcome metric:** uplift in **“confirmed dispatchable”** vs **“reschedule / address change / hard reject”** — see deeper narrative in [`USE_CASE.md`](USE_CASE.md).
+1. [Overview](#overview)
+2. [Architecture](#architecture)
+3. [Tech stack](#tech-stack)
+4. [Project structure](#project-structure)
+5. [Getting started](#getting-started)
+6. [Configuration](#configuration)
+7. [Testing](#testing)
+8. [CI and deployment](#ci-and-deployment)
+9. [API reference](#api-reference)
+10. [Reliability and caveats](#reliability-and-caveats)
+11. [Assignment submission](#assignment-submission)
+12. [Maintainer](#maintainer)
+13. [License](#license)
 
 ---
 
-## End-to-end architecture
+## Overview
+
+**Problem:** COD orders confirmed online often **reject, reschedule, or need address fixes at the doorstep** — direct margin and logistics loss (RTO tax).
+
+**Product slice:** Operators run a short **Hindi/English Bolna voice check** before dispatch; outcomes update order rows (status, captures, transcript references).
+
+**Operator flow:**
+
+1. Orders appear on the dashboard (seeded demo in dev; **Firestore** in prod).
+2. **Verify** → FastAPI asks Bolna to place the outbound call with order context (SKU, value, slot, etc.).
+3. Call completes → Bolna **`POST`s webhook**; backend normalizes payload, persists call + order deltas.
+4. If payload is incomplete (common with async extraction) → **Refresh** re-pulls **`GET /executions/{id}`** and reuses the same normalisation path.
+
+**Outcome metric:** improve share of orders **confirmed dispatchable** vs **reschedule / address-change / cancel / unreachable** — full narrative + metrics framing in [`USE_CASE.md`](USE_CASE.md).
+
+---
+
+## Architecture
+
+Split into **HLD** (what exists in the system and how major pieces talk) and **LLD** (how the frontend and backend codebases are structured internally).
+
+### HLD: System context (full project)
+
+Logical view: **who** touches **which runtime**, and **where data + secrets** live. This is the “whole product” picture reviewers expect before opening folders.
+
+```mermaid
+flowchart TB
+  subgraph human [People]
+    OP[Operator]
+  end
+  subgraph voice [Bolna]
+    BOL[Bolna voice platform]
+  end
+  subgraph gcp [Google Cloud]
+    FE[Cloud Run service - Next.js]
+    BE[Cloud Run service - FastAPI]
+    FS[(Firestore)]
+    SM[(Secret Manager)]
+    AR[(Artifact Registry)]
+  end
+  subgraph gh [GitHub]
+    GA[Actions CI_CD]
+  end
+
+  OP -->|HTTPS UI| FE
+  FE -->|server-side HTTPS| BE
+  BE -->|HTTPS place_call executions| BOL
+  BOL -->|async POST webhook| BE
+  BE --> FS
+  BE -.->|read keys at runtime| SM
+  GA -->|OIDC_WIF publish image| AR
+  GA -->|deploy revision| FE
+  GA -->|deploy revision| BE
+```
+
+**Reading the diagram:**
+
+- **Synchronous path:** Operator → Next (SSR/RSC + BFF routes) → FastAPI → (optional Bolna outbound when operator clicks Verify).
+- **Asynchronous path:** Bolna terminates call → **`POST /webhooks/bolna`** → FastAPI updates `Store`; UI may Refresh to poll executions if webhook payload was thin.
+- **State:** authoritative order + call snapshots in **Firestore** (prod) or memory (local/tests).
+- **Secrets:** Bolna keys (and demo phone) sourced from **Secret Manager** in prod — not from the repo.
+- **Supply chain:** images land in **Artifact Registry**; GitHub deploys both services with **WIF** (no long-lived GCP JSON keys in GitHub).
+
+---
+
+### HLD: Deployment and delivery
+
+How the **repository** maps to **runtimes** and **pipelines** (still high level, but “DevOps aware”).
 
 ```mermaid
 flowchart LR
-  subgraph client [Browser]
-    UI[Next.js UI]
+  subgraph repo [Monorepo]
+    BEsrc[backend/]
+    FEsrc[frontend/]
+    WF[.github/workflows]
   end
-  subgraph next [Cloud Run — Frontend]
-    BFF[src/app/api/* BFF proxies]
-    RSC[RSC pages]
-    UI --> BFF
-    UI --> RSC
+  subgraph ci [CI every push_PR]
+    T1[pytest]
+    T2[typecheck_lint_vitest]
   end
-  subgraph api [Cloud Run — Backend FastAPI]
-    ORD[Orders domain]
-    CALL[Calls + webhook]
-    STORE[(Store abstraction)]
-    ORD --- STORE
-    CALL --- STORE
+  subgraph cd [CD main path-filtered]
+    D1[deploy-backend.yml]
+    D2[deploy-frontend.yml]
   end
-  subgraph gcp [GCP]
-    FS[(Firestore)]
-    SM[Secret Manager]
+  subgraph reg [asia-south1 Artifact Registry]
+    IMG1[backend image]
+    IMG2[frontend image]
   end
-  subgraph bolna [Bolna Platform]
-    AG[Voice agent]
-    WH[Webhooks API]
-    EX[Executions API]
-  end
-  BFF -->|server-side fetch| ORD
-  RSC --> ORD
-  CALL <-->|HTTPS| AG
-  WH -->|POST webhook| CALL
-  CALL -->|refresh| EX
-  STORE --> FS
-  ORD -.-> SM
+
+  BEsrc & FEsrc --> T1 & T2
+  BEsrc --> D1 --> IMG1
+  FEsrc --> D2 --> IMG2
+  WF --> ci & cd
+  IMG1 --> BEcr[Cloud Run backend]
+  IMG2 --> FEcr[Cloud Run frontend]
 ```
 
-**Design intent**
-
-- **BFF-style Next routes** (`/api/orders/...`) keep the browser talking to **same-origin** handlers; FastAPI URLs and keys stay server-side — better than exposing admin backends to arbitrary origins.
-- **Store protocol** (`memory` locally / tests, `Firestore` in prod): domain code stays ignorant of persistence backend.
-- **Webhook + polling**: async voice stacks are unreliable at the edges; **`POST …/refresh`** is a deterministic escape hatch without weakening idempotency for duplicate deliveries.
+Each deploy workflow: **`docker build` → container smoke on runner → push digest → `gcloud run deploy`**. Plaintext tuning comes from **GitHub Variables**; sensitive values from **Secret Manager**.
 
 ---
+
+### HLD: Data and control flows
+
+```mermaid
+sequenceDiagram
+  participant U as Operator
+  participant N as Next.js BFF_RSC
+  participant B as FastAPI
+  participant L as Bolna API
+  participant W as Bolna webhook
+  participant D as Store Firestore
+
+  U->>N: Dashboard verify refresh
+  N->>B: REST orders verify refresh
+  B->>L: HTTPS place_call GET execution
+  B->>D: Upsert orders calls
+  L-->>W: post-call webhook
+  W->>B: POST webhooks bolna
+  B->>D: Normalize idempotent persist
+```
+
+---
+
+### LLD: Backend (FastAPI)
+
+**Layer model** enforced in-code: **`router` → `service` → `repository` → `Store`**. Cross-cutting **`mutator`** modules normalize external shapes (Bolna webhook / executions) before persistence. **`deps.py`** is the composition root for FastAPI DI.
+
+```mermaid
+flowchart TB
+  subgraph expose [Transport]
+    M[main.py + CORS + lifespan]
+    R_O[domains/orders/router]
+    R_C[domains/calls/router actions]
+    R_W[domains/calls/router webhooks bolna]
+    R_H[domains/health/router]
+  end
+  subgraph svc [Application services]
+    S_O[OrderService]
+    S_C[CallService]
+    S_H[HealthService]
+  end
+  subgraph dom [Domains]
+    Repo_O[OrderRepository]
+    Repo_C[CallRepository]
+    Mut_O[orders/mutator]
+    Mut_C[calls/mutator]
+  end
+  subgraph ports [Ports]
+    ST[(Store protocol)]
+    BC[BolnaClient shared]
+  end
+
+  M --> R_O & R_C & R_W & R_H
+  R_O --> S_O --> Repo_O
+  R_C & R_W --> S_C --> Repo_C & BC
+  Repo_O & Repo_C --> ST
+  S_C -.-> Mut_C
+  S_O -.-> Mut_O
+  R_H --> S_H
+```
+
+**Module map (physical):**
+
+| Path | Responsibility |
+|------|----------------|
+| `app/core/` | `settings`, **`db.Store` + InMemory + Firestore**, `deps`, lifespan wiring |
+| `app/domains/orders/` | Orders CRUD, list, **`router`**, **`service`**, **`repository`**, **`mutator`**, Pydantic **`schemas`** |
+| `app/domains/calls/` | Verify + refresh flow, webhook ingest, **`CallRepository`** idempotency, **`BolnaWebhookPayload`** |
+| `app/shared/bolna_client.py` | `place_call`, `get_execution` over HTTPS |
+| `app/domains/health/` | Liveness/readiness-style surface for ops |
+
+---
+
+### LLD: Frontend (Next.js App Router)
+
+**Two data planes:** (1) **Server Components + `orders-server`** for first paint / SEO-safe data loading. (2) **Client Components + TanStack Query** calling **`/api/*` route handlers** so the browser never needs the FastAPI URL or secrets.
+
+```mermaid
+flowchart TB
+  subgraph rsc [Server layer]
+    Pg[app/page.tsx RSC]
+    Pd[app/orders/id RSC]
+    OSV[lib/orders-server.ts]
+    BF[lib/backendFetch]
+  end
+  subgraph bff [BFF Route Handlers]
+    R0["/api/orders"]
+    R1["/api/orders/[id]"]
+    Rv["/api/.../verify"]
+    Rr["/api/.../refresh"]
+    Rh["/api/health"]
+  end
+  subgraph ui [Client layer]
+    Ctr[OrdersContainer hooks]
+    H[useOrdersQuery useOrderMutations]
+    Cmp[components/orders Row List Dialog]
+  end
+
+  Pg & Pd --> OSV --> BF
+  Ctr --> Cmp
+  Ctr --> H
+  H -->|same-origin fetch| R0 & R1 & Rv & Rr
+  R0 & R1 & Rv & Rr --> BF
+  BF -->|BACKEND_API_URL| API[FastAPI]
+```
+
+**Module map (`frontend/src/`):**
+
+| Area | Responsibility |
+|------|----------------|
+| `app/` | RSC pages, **`api/**/route.ts`** BFF proxies, layout, loading, `api/health` for container smoke |
+| `lib/` | `backendFetch`, `orders-server`, `api-response` helpers |
+| `hooks/` | React Query wrappers + mutations + cache invalidation |
+| `components/orders/` | Presentational dashboard + dialogs |
+| `config/`, `constants/`, `types/`, `query-keys/` | Env, routes, enums, typed API models, query factories |
+| `providers/` | `QueryClientProvider`, `Toaster` |
+
+---
+
+### Cross-cutting architectural decisions
+
+| Topic | Approach |
+|-------|----------|
+| **Browser → APIs** | **BFF `/api/*`** keeps FastAPI origins and secrets off the public client surface. |
+| **Persistence** | Domains speak **`Store`** only — swap **memory** vs **Firestore** without rewriting repositories. |
+| **Voice unreliability** | **Webhook idempotency** + **`refresh` → executions API** share one normalisation pipeline. |
+
 
 ## Tech stack
 
-| Layer | Choice | Rationale |
-|--------|--------|-----------|
-| Voice / LLM runtime | **Bolna** | Assignment constraint; agent + telephony + execution APIs. |
-| API | **FastAPI** + Pydantic v2 | Typed contracts, async I/O, OpenAPI for integrators. |
-| Persistence | **Firestore** (prod) + in-memory (dev/test) | Serverless, no connection pool drama on Cloud Run; explicit `STORE_BACKEND` switch. |
-| Web | **Next.js 16** App Router, **TypeScript** | RSC for initial data, route handlers for mutations, strong typing end-to-end. |
-| UI | **Tailwind v4**, **shadcn/ui**, **TanStack Query** | Fast iteration, accessible primitives, client cache with server truth. |
-| Quality | **pytest**, **Vitest**, **ESLint**, **tsc** | CI gate before merge; Vitest colocated under `frontend/src/tests`. |
-| Delivery | **Docker** + **Cloud Run** + **Artifact Registry** | Immutable artifacts, scale-to-zero cost profile, regional proximity (`asia-south1` images; Firestore DB may be multi-region). |
-| CI auth | **GitHub OIDC → GCP WIF** | No long-lived JSON keys in GitHub secrets. |
+| Layer | Choice | Why it fits |
+|-------|--------|-------------|
+| Voice | **Bolna** | Telephony + agent runtime + executions API (assignment-aligned). |
+| API | **FastAPI**, Pydantic v2 | Async I/O, strict schemas, **`/docs` OpenAPI** for reviewer introspection. |
+| Data | **Firestore** (prod), memory (dev/test) | Serverless affinity with Cloud Run; `STORE_BACKEND` toggles explicitly. |
+| Web | **Next.js 16** App Router, **TypeScript** | RSC for first paint data; **`src/` layout** per `frontend/AGENTS.md`. |
+| UI | **Tailwind v4**, **shadcn/ui**, **TanStack Query** | Accessible primitives + client cache invalidated after mutations. |
+| Quality | **pytest**, **Vitest**, ESLint, `tsc` | Every branch gets API + UI gates in CI. |
+| Ship | **Docker**, **Artifact Registry**, **Cloud Run** | Immutable image → regional deploy; scale-to-zero friendly. |
+| CI → GCP | **GitHub OIDC + WIF** | Short-lived federation; avoids static GCP JSON keys in GitHub. |
 
 ---
 
-## Repository layout
+## Project structure
 
 ```text
 .
-├── backend/                 # FastAPI — domains/orders, domains/calls, shared/bolna_client
-├── frontend/                # Next.js — canonical code under frontend/src/
+├── backend/                 # FastAPI — app/domains/{orders,calls}, shared/bolna_client
+├── frontend/                # Next.js — application code under frontend/src/
 ├── .github/workflows/
-│   ├── ci.yml               # Every push/PR — backend pytest + frontend lint/type/test
-│   ├── deploy-backend.yml   # main + backend/** → build → smoke → push → Cloud Run
-│   └── deploy-frontend.yml # main + frontend/** → …
-├── USE_CASE.md              # Expanded business + workflow prose
-├── Full Stack Assignment.md # Original brief (submission checklist)
-└── AGENTS.md                # Repo-level pointer to frontend/backend agent guides
+│   ├── ci.yml               # All pushes/PRs — pytest + lint + typecheck + Vitest
+│   ├── deploy-backend.yml   # main + backend/** — build → smoke → AR → Cloud Run
+│   └── deploy-frontend.yml  # main + frontend/** — same pattern
+├── USE_CASE.md              # Deep business + workflow write-up
+├── Full Stack Assignment.md # Original submission brief
+└── AGENTS.md                # Pointer to frontend/backend contributor guides
 ```
 
-Frontend structure follows **`frontend/AGENTS.md`** (`src/` as root for app code). Backend follows **`backend/AGENTS.md`** (Router → Service → Repository → Mutator).
+**Conventions:** **frontend** → `frontend/AGENTS.md` (`src/` root). **backend** → `backend/AGENTS.md` (Router → Service → Repository → Mutator).
 
 ---
 
-## Prerequisites
+## Getting started
 
-- **Python 3.12+** (backend)
-- **Node.js 20+** & **npm 11** (frontend — lockfile aligns with Docker `corepack` npm in CI image)
-- **Docker** (optional — mirrors production builds)
-- **Google Cloud SDK** (`gcloud`) — only when touching deployed infra or Firestore emulator alternatives
+### Prerequisites
 
----
-
-## Local development
+- **Python 3.12+**
+- **Node.js 20+** and **npm 11** (matches Docker `corepack` path used in `frontend/Dockerfile`)
+- **Docker** (optional; reproduces CI images locally)
+- **`gcloud`** (only for GCP / Firestore touchpoints outside GitHub Actions)
 
 ### Backend
 
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt -r requirements-dev.txt
-cp .env.example .env                  # Fill Bolna + optional FIRESTORE_PROJECT
-export STORE_BACKEND=memory           # default; omit FIRESTORE locally
+cp .env.example .env    # fill from Configuration section below
+export STORE_BACKEND=memory
 uvicorn app.main:app --reload --port 8000
 ```
 
-- OpenAPI: `http://localhost:8000/docs`
-- Health: `GET /health`
+- **OpenAPI UI:** `http://localhost:8000/docs`
+- **Liveness:** `GET /health`
 
 ### Frontend
 
 ```bash
 cd frontend
-npm install -g npm@11.8.0           # match CI/Docker npm major if lockfile picky
+npm install -g npm@11.8.0   # if local npm major mismatches lockfile / CI
 npm ci
-cp .env.example .env.local          # BACKEND_API_URL=http://localhost:8000
-npm run dev                         # http://localhost:3000
+cp .env.example .env.local
+npm run dev                 # http://localhost:3000
 ```
 
-Scripts: `npm run lint`, `npm run typecheck`, `npm test`.
+**Scripts:** `npm run lint` · `npm run typecheck` · `npm test`
 
 ---
 
 ## Configuration
 
-### Backend (environment)
+Configuration is **layered**: laptop uses `.env` files; **production values are not committed** — they flow **GitHub Actions Variables / Secrets** → **Cloud Run env** and **GCP Secret Manager** (see [CI and deployment](#ci-and-deployment)).
 
-| Variable | Purpose |
-|-----------|---------|
-| `STORE_BACKEND` | `memory` (default / tests) or `firestore` |
-| `GCP_PROJECT_ID` | Required when `STORE_BACKEND=firestore` |
-| `BOLNA_API_KEY`, `BOLNA_AGENT_ID` | Bolna API |
-| `BOLNA_API_BASE_URL` | Bolna REST base URL (production value must come from **GitHub Variable** → Cloud Run, not committed) |
-| `DEMO_RECIPIENT_NUMBER` | Optional demo routing override |
-| `BOLNA_WEBHOOK_SHARED_SECRET` | Optional shared-secret verification for webhooks |
-| `CORS_ORIGINS` | Comma-separated origins (must include deployed Next URL alongside `credentials` middleware) |
+### Backend — local / runtime keys
 
-Copy from `backend/.env.example`.
+| Variable | Detail |
+|----------|--------|
+| `STORE_BACKEND` | `memory` (default, tests) or `firestore`. |
+| `GCP_PROJECT_ID` | Required when `STORE_BACKEND=firestore`. |
+| `BOLNA_API_KEY`, `BOLNA_AGENT_ID` | From Bolna console; in prod mounted via **Secret Manager** (see deploy workflow). |
+| `BOLNA_API_BASE_URL` | Bolna REST origin; **set in GitHub Variable** for deploy (empty default in app code — must be provided when calling Bolna). |
+| `DEMO_RECIPIENT_NUMBER` | Optional: route all demo calls to one verified MSISDN. |
+| `BOLNA_WEBHOOK_SHARED_SECRET` | Optional weak guard in dev. |
+| `CORS_ORIGINS` | Comma-separated; **cannot** be `*` while `allow_credentials=True` on FastAPI. |
 
-### Frontend
+Template: `backend/.env.example`.
 
-| Variable | Scope |
-|-----------|-------|
-| `BACKEND_API_URL` | Server-only — RSC & route handlers (`src/lib/api.ts`) |
-| `NEXT_PUBLIC_BACKEND_API_URL` | Build-time/public mirror — keep aligned for any client paths |
+### Frontend — local / runtime keys
 
-Copy from `frontend/.env.example`.
+| Variable | Detail |
+|----------|--------|
+| `BACKEND_API_URL` | **Server-only** — used by RSC and `src/lib/api.ts` (never ship secrets to the client bundle via this path). |
+| `NEXT_PUBLIC_BACKEND_API_URL` | Build-time/public mirror; keep equal to the browser-reachable API origin when client code needs it. |
+
+Template: `frontend/.env.example`. Local dev uses `http://localhost:8000` as DX fallback in `src/config/env.ts`; production always overrides via Cloud Run / build args.
 
 ---
 
 ## Testing
 
 ```bash
-# Backend
+# Backend (in-memory store)
 cd backend && export STORE_BACKEND=memory && pytest -q
 
 # Frontend
@@ -196,72 +364,105 @@ cd frontend && npm run typecheck && npm run lint && npm test
 
 ---
 
-## CI/CD & cloud deployment
+## CI and deployment
 
-**CI (`ci.yml`):** runs on **every push and pull request** — parallel **pytest** and **typecheck + ESLint + Vitest**.
+### Continuous integration (`ci.yml`)
 
-**Deploy workflows:** trigger only on `main`:
+Runs on **every push and every pull request** (all branches): **pytest** and **typecheck + ESLint + Vitest** in parallel.
 
-- **`backend/**` changed** → `deploy-backend.yml`: Docker build → **container smoke** (`GET /health` on ephemeral port) → push to Artifact Registry → `gcloud run deploy`.
-- **`frontend/**` changed** → `deploy-frontend.yml`: same pattern using **`GET /api/health`** (dependency-free probe).
+### Deploy workflows (only `main`)
 
-Infrastructure **values are not pinned in source**: deploy workflows validate that required **GitHub Actions Variables / Secrets** exist before building. Runtime config is injected via **Cloud Run env** (plaintext vars from Gh `vars`, secrets from GCP Secret Manager by name).
+| Workflow | Path filter | Pipeline |
+|----------|-------------|----------|
+| `deploy-backend.yml` | `backend/**` | `docker build` → run container → **`GET /health` smoke** → push `asia-south1-docker.pkg.dev/...` → `gcloud run deploy` |
+| `deploy-frontend.yml` | `frontend/**` | Same → **`GET /api/health` smoke** (no backend dependency) → deploy |
 
-### GitHub repository — Variables (plaintext)
+**Preflight:** both workflows **fail fast** if required GitHub **Variables** are empty (no silent defaults baked into source).
 
-Set under **Repo → Settings → Secrets and variables → Actions → Variables**. These are referenced from `.github/workflows/*` via `vars.*` — **do not bake them into Dockerfile or `.ts`/.py`** (local `.env*` only for laptop dev).
+**Runtime injection:** plaintext config from **`vars.*`**; Bolna keys from **GCP Secret Manager** via `--set-secrets` (secret *names* are fixed in workflow to match your GCP project — rotate values in Secret Manager, not in git).
 
-| Variable | Used by |
-|----------|---------|
-| `GCP_PROJECT_ID` | Artifact Registry URLs, backend `GCP_PROJECT_ID` env |
-| `GCP_REGION` | Deploy region / docker registry hostname |
-| `AR_REPO` | Artifact Registry Docker repo id |
-| `BACKEND_CLOUD_RUN_SERVICE` | `gcloud run deploy` target (backend) |
-| `FRONTEND_CLOUD_RUN_SERVICE` | Same (frontend) |
-| `STORE_BACKEND` | Backend Cloud Run **`STORE_BACKEND`** (e.g. `firestore`) |
-| `BOLNA_API_BASE_URL` | Backend Cloud Run **`BOLNA_API_BASE_URL`** (e.g. production Bolna API host) |
-| `CORS_ORIGINS` | Comma-separated origins (often `http://localhost:3000,<frontend-cloud-run-url>`) |
-| `BACKEND_API_URL` | Frontend service server-side **`BACKEND_API_URL`** |
-| `NEXT_PUBLIC_BACKEND_API_URL` | Passed as Docker build-arg + mirrored on frontend service |
+### GitHub Actions — Variables (plaintext)
 
-### GitHub repository — Secrets
+| Variable | Role |
+|----------|------|
+| `GCP_PROJECT_ID` | Project id in image URLs + backend `GCP_PROJECT_ID` |
+| `GCP_REGION` | Cloud Run region + Artifact Registry hostname |
+| `AR_REPO` | Docker repository id inside Artifact Registry |
+| `BACKEND_CLOUD_RUN_SERVICE` | Backend Cloud Run service name |
+| `FRONTEND_CLOUD_RUN_SERVICE` | Frontend Cloud Run service name |
+| `STORE_BACKEND` | e.g. `firestore` on backend service |
+| `BOLNA_API_BASE_URL` | Bolna API host for backend container |
+| `CORS_ORIGINS` | Allowed browser origins (comma-separated; `gcloud` escaping handled in workflow for commas) |
+| `BACKEND_API_URL` | FastAPI public URL for Next server-side fetches |
+| `NEXT_PUBLIC_BACKEND_API_URL` | Docker build-arg + frontend service env mirror |
 
-| Secret | Purpose |
-|--------|---------|
-| `GCP_WIF_PROVIDER` | Workload Identity Federation provider resource |
-| `GCP_DEPLOY_SA` | Service account GitHub impersonates for push + deploy |
-| `BACKEND_RUNTIME_SA` | Cloud Run backend revision identity (Firestore + secrets access) |
+### GitHub Actions — Secrets
 
-### After each deploy
+| Secret | Role |
+|--------|------|
+| `GCP_WIF_PROVIDER` | WIF provider resource string |
+| `GCP_DEPLOY_SA` | Impersonated deployer SA |
+| `BACKEND_RUNTIME_SA` | Identity of the **backend** Cloud Run revision (Firestore + secret accessor) |
 
-`deploy-*.yml` appends **`BACKEND`** / **`Frontend`** URL lines to the job summary (`gcloud run services describe`). Use that URL for **Bolna webhook configuration**: **`POST /webhooks/bolna`** on the public API origin (route in [`backend/app/domains/calls/router.py`](backend/app/domains/calls/router.py)).
+### Post-deploy
 
----
+Each successful job writes the service URL into the **Actions summary** (`gcloud run services describe ...`). Configure Bolna’s webhook to:
 
-## Operational notes (Bolna, Firestore, reliability)
+`POST https://<your-api-host>/webhooks/bolna`
 
-1. **Idempotency:** duplicate webhook deliveries are deduped; “signal present” heuristic avoids locking the row before payload is semantically terminal (see calls service logic).
-2. **Refresh path:** **`POST …/refresh`** pulls Bolna execution JSON and feeds the same normalizer — useful when **`extracted_data`** is delayed or empty.
-3. **Transcript fallback:** if structured extraction is null but the assistant verbalized canonical tags in-conversation, a **narrow regex miner** derives `outcome_tag` etc. — demo survives flaky extraction pipelines (**not** a substitute for authoritative Bolna config in prod).
-4. **Firestore indexes:** composite queries on large collections may need console-created indexes — watch first heavy list endpoints in logs.
-5. **CORS:** `allow_credentials=True` forbids wildcard origins; comma-list real HTTPS origins (**frontend + localhost** for dev).
+Implementation: [`backend/app/domains/calls/router.py`](backend/app/domains/calls/router.py).
 
 ---
 
-## Assignment checklist
+## API reference
 
-| Objective | Where it’s addressed |
-|-----------|-------------------------|
-| 1 · Enterprise use case | [`USE_CASE.md`](USE_CASE.md) + summary above |
-| 2 · Bolna voice agent | Agent config external to repo; backend [`bolna_client.py`](backend/app/shared/bolna_client.py), calls domain |
-| 3 · Web app workflow | Next.js dashboard under `frontend/src/` |
-| 4 · Full flow demo | Local or deployed: UI → API → Bolna → webhook/refresh → DB |
-| 5 · Repo + deployed link | This README + Cloud Run URLs (from Actions summary / `gcloud`, not pinned here) + screen recording _(outside repo)_ |
+High-signal routes for reviewers (full detail in OpenAPI **`/docs`** when the backend is running):
 
-Submission pack (per assignment): deck + recording → Google Drive folder **`Saurav_kumar_FSE@bolna`** → [submission form](https://forms.gle/g2YpvmjZm4ufb87XA).
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/health` | Liveness / CI smoke |
+| `GET` | `/orders` | Paginated list (shape in orders router) |
+| `POST` | `/orders` | Create order (demo / ops) |
+| `GET` | `/orders/{id}` | Order + last call snapshot |
+| `POST` | `/orders/{id}/verify` | Trigger Bolna outbound call |
+| `POST` | `/orders/{id}/refresh` | Pull latest Bolna execution + reconcile |
+| `GET` | `/orders/{id}/calls` | Call history for order |
+| `POST` | `/webhooks/bolna` | Bolna post-call webhook |
+
+Frontend mirrors mutations through **`/api/orders/...`** Next handlers (BFF).
 
 ---
 
-## License / attribution
+## Reliability and caveats
 
-Submission project for Bolna hiring flow. Dependencies remain under their respective licenses.
+1. **Webhooks:** deliveries can repeat; handler is **idempotent** and only “locks” processing when a **meaningful signal** exists (avoids starving late-arriving extractions).
+2. **Execution lag:** Bolna `extracted_data` may land after `call-disconnected`; **`refresh`** is the supported reconciliation path.
+3. **Transcript mining:** if structured extraction is empty but the assistant spoke tagged outcomes, backend applies a **narrow regex fallback** — **demo resilience**, not a replacement for fixing Bolna extraction in production.
+4. **Firestore:** first complex list queries may require **composite indexes** (console suggests the exact YAML).
+5. **CORS + credentials:** list every real HTTPS origin explicitly (frontend Cloud Run URL + `http://localhost:3000` for local UI).
+
+---
+
+## Assignment submission
+
+| # | Requirement | Evidence |
+|---|-------------|----------|
+| 1 | Enterprise use case | This **Overview** + [`USE_CASE.md`](USE_CASE.md) |
+| 2 | Bolna agent | External agent config + [`bolna_client.py`](backend/app/shared/bolna_client.py), calls domain |
+| 3 | Web app solving workflow | [`frontend/src/`](frontend/src/) |
+| 4 | End-to-end demo | UI → API → Bolna → webhook/refresh → store |
+| 5 | Repo + deploy link + recording | GitHub Actions deploy summaries / `gcloud` for URLs · screen recording · deck |
+
+**Bolna submission pack:** Google Drive folder **`Saurav_kumar_FSE@bolna`** (deck + call recording etc.) · [submission form](https://forms.gle/g2YpvmjZm4ufb87XA).
+
+---
+
+## Maintainer
+
+**Saurav Kumar** — AI voice integration (Bolna APIs + webhook/execution reconciliation), backend domain modelling and storage abstraction, Next.js/App Router frontend and BFF layer, Dockerfile + Cloud Run rollout, GitHub Actions (WIF, path deploys, smoke gates), and documentation of operational tradeoffs above.
+
+---
+
+## License
+
+Submission project for the Bolna hiring exercise. Third-party libraries remain under their respective licenses.
