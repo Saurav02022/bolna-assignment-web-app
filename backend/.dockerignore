@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtualenvs
+venv/
+.venv/
+env/
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Build / VCS
+.git/
+.github/
+*.md
+Dockerfile
+.dockerignore
+start.sh
+requirements-dev.txt

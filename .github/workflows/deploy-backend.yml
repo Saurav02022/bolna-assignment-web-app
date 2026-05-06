@@ -1,0 +1,114 @@
+name: deploy-backend
+
+# Deploy backend to Cloud Run only when `backend/` (or this workflow) changes on `main`.
+# Order: authenticate → docker build → run container smoke test (/health) → push → deploy.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-backend.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ vars.GCP_REGION }}
+  AR_REPO: ${{ vars.AR_REPO }}
+  CLOUD_RUN_SERVICE: ${{ vars.BACKEND_CLOUD_RUN_SERVICE }}
+  SMOKE_PORT: "18080"
+
+jobs:
+  build-smoke-push-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - run: |
+          set -x
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Docker build (backend)
+        working-directory: backend
+        env:
+          IMAGE_LOCAL: ghcr-backend-local-${{ github.run_id }}:smoke
+        run: |
+          docker build -t "${IMAGE_LOCAL}" .
+
+      # Verify on the Actions runner before any push — catches broken builds early.
+
+      - name: Smoke test container
+        env:
+          IMAGE_LOCAL: ghcr-backend-local-${{ github.run_id }}:smoke
+        run: |
+          set -euo pipefail
+          CID=$(docker run -d --rm \
+            -p "127.0.0.1:${SMOKE_PORT}:8080" \
+            -e STORE_BACKEND=memory \
+            -e BOLNA_API_KEY=ci-test \
+            -e BOLNA_AGENT_ID=ci-test \
+            -e DEMO_RECIPIENT_NUMBER=+910000000000 \
+            "${IMAGE_LOCAL}")
+          echo "container=$CID"
+          trap 'docker logs "$CID" 2>&1 | tail -80 || true; docker stop "$CID" >/dev/null 2>&1 || true' EXIT
+
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${SMOKE_PORT}/health"; then
+              echo ""
+              echo "Smoke OK after ${i} attempt(s)."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Backend smoke failed" >&2
+          exit 1
+
+      - name: Tag for Artifact Registry
+        working-directory: backend
+        env:
+          IMAGE_LOCAL: ghcr-backend-local-${{ github.run_id }}:smoke
+          IMAGE: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPO }}/backend
+        run: |
+          docker tag "${IMAGE_LOCAL}" "${IMAGE}:${{ github.sha }}"
+          docker tag "${IMAGE_LOCAL}" "${IMAGE}:latest"
+
+      - name: Push image
+        env:
+          IMAGE: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPO }}/backend
+        run: |
+          docker push "${IMAGE}:${{ github.sha }}"
+          docker push "${IMAGE}:latest"
+
+      - name: Deploy Cloud Run (backend)
+        env:
+          IMAGE: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPO }}/backend
+        run: |
+          gcloud run deploy "${CLOUD_RUN_SERVICE}" \
+            --image "${IMAGE}:${{ github.sha }}" \
+            --region "${GCP_REGION}" \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --service-account "${{ secrets.BACKEND_RUNTIME_SA }}" \
+            --set-env-vars "STORE_BACKEND=firestore,GCP_PROJECT_ID=${GCP_PROJECT_ID},BOLNA_API_BASE_URL=https://api.bolna.ai,CORS_ORIGINS=${{ vars.CORS_ORIGINS }}" \
+            --set-secrets "BOLNA_API_KEY=BOLNA_API_KEY:latest,BOLNA_AGENT_ID=BOLNA_AGENT_ID:latest,DEMO_RECIPIENT_NUMBER=DEMO_RECIPIENT_NUMBER:latest"
+
+      - run: |
+          URL=$(gcloud run services describe "${CLOUD_RUN_SERVICE}" --region "${GCP_REGION}" --format 'value(status.url)')
+          echo "**Backend:** ${URL}" >> "$GITHUB_STEP_SUMMARY"

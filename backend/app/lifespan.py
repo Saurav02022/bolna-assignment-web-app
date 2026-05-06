@@ -3,14 +3,16 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.core.db import database_lifespan
+from app.core.db import store_lifespan
 from app.core.logging import configure_logging
-from app.core.settings import settings
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
-    async with database_lifespan() as db:
-        app.state.db = db
+    async with store_lifespan() as store:
+        app.state.store = store
+        from app.domains.orders.seed import seed_demo_orders
+
+        await seed_demo_orders(store)
         yield
