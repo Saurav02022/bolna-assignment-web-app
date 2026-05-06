@@ -35,6 +35,7 @@ class Store(Protocol):
     async def get_order(self, order_id: str) -> dict[str, Any] | None: ...
     async def list_orders(self) -> list[dict[str, Any]]: ...
     async def upsert_order(self, order: dict[str, Any]) -> dict[str, Any]: ...
+    async def delete_order(self, order_id: str) -> None: ...
 
     # Calls
     async def get_call(self, call_id: str) -> dict[str, Any] | None: ...
@@ -86,6 +87,13 @@ class InMemoryStore:
     async def upsert_order(self, order: dict[str, Any]) -> dict[str, Any]:
         self.orders[order["id"]] = order
         return order
+
+    async def delete_order(self, order_id: str) -> None:
+        self.orders.pop(order_id, None)
+        call_ids = [cid for cid, c in self.calls.items() if c.get("order_id") == order_id]
+        for cid in call_ids:
+            del self.calls[cid]
+            self.processed_call_ids.discard(cid)
 
     async def get_call(self, call_id: str) -> dict[str, Any] | None:
         return self.calls.get(call_id)
@@ -187,6 +195,14 @@ class FirestoreStore:
     async def upsert_order(self, order: dict[str, Any]) -> dict[str, Any]:
         await self._orders().document(order["id"]).set(_to_firestore(order))
         return order
+
+    async def delete_order(self, order_id: str) -> None:
+        await self._orders().document(order_id).delete()
+        query = self._calls().where("order_id", "==", order_id)
+        async for snap in query.stream():
+            cid = snap.id
+            await self._calls().document(cid).delete()
+            await self._processed().document(cid).delete()
 
     # --- calls --------------------------------------------------------------
 

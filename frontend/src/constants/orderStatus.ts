@@ -22,7 +22,7 @@ export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
   cancelled: "Cancelled",
   needs_followup: "Needs followup",
   unreachable: "Unreachable",
-  verification_failed: "Verification failed",
+  call_failed: "Call failed",
 };
 
 export const ORDER_STATUS_VARIANT: Record<OrderStatus, StatusVariant> = {
@@ -34,7 +34,7 @@ export const ORDER_STATUS_VARIANT: Record<OrderStatus, StatusVariant> = {
   cancelled: "destructive",
   needs_followup: "warning",
   unreachable: "secondary",
-  verification_failed: "destructive",
+  call_failed: "destructive",
 };
 
 export const OUTCOME_TAG_LABEL: Record<OutcomeTag, string> = {

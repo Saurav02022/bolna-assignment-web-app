@@ -36,3 +36,38 @@ def test_missing_order_returns_404(client: TestClient) -> None:
     assert response.status_code == 404
     body = response.json()
     assert body["code"] == "ORDER_NOT_FOUND"
+
+
+def test_patch_order(client: TestClient) -> None:
+    res = client.patch(
+        "/orders/ORD-1001",
+        json={"customer_name": "Updated Name"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["customer_name"] == "Updated Name"
+
+    fetched = client.get("/orders/ORD-1001").json()
+    assert fetched["customer_name"] == "Updated Name"
+
+
+def test_patch_order_empty_returns_422(client: TestClient) -> None:
+    res = client.patch("/orders/ORD-1001", json={})
+    assert res.status_code == 422
+
+
+def test_delete_order(client: TestClient) -> None:
+    payload = {
+        "customer_name": "Disposable",
+        "phone": "+919999999988",
+        "product_summary": "Test delete",
+        "order_value": 100,
+        "address_short": "X",
+        "scheduled_slot": "soon",
+        "brand_name": "RetailKart",
+    }
+    cre = client.post("/orders", json=payload).json()
+    oid = cre["id"]
+    dr = client.delete(f"/orders/{oid}")
+    assert dr.status_code == 204
+    assert client.get(f"/orders/{oid}").status_code == 404

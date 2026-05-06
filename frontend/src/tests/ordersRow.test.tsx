@@ -32,6 +32,8 @@ const baseOrder: OrderResponse = {
 function renderRow(props: Partial<React.ComponentProps<typeof Row>> = {}) {
   const onVerify = vi.fn();
   const onView = vi.fn();
+  const onEdit = vi.fn();
+  const onDelete = vi.fn();
   render(
     <Table>
       <TableBody>
@@ -40,12 +42,14 @@ function renderRow(props: Partial<React.ComponentProps<typeof Row>> = {}) {
           isVerifying={false}
           onVerify={onVerify}
           onView={onView}
+          onEdit={onEdit}
+          onDelete={onDelete}
           {...props}
         />
       </TableBody>
     </Table>,
   );
-  return { onVerify, onView };
+  return { onVerify, onView, onEdit, onDelete };
 }
 
 describe("Row", () => {

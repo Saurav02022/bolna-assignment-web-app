@@ -30,6 +30,18 @@ class OrderCreate(BaseModel):
     brand_name: str = Field(default="RetailKart", examples=["RetailKart"])
 
 
+class OrderUpdate(BaseModel):
+    """Partial patch for ops — Bolna-derived fields stay unless changed elsewhere."""
+
+    customer_name: str | None = Field(default=None)
+    phone: str | None = Field(default=None, description="E.164 format")
+    product_summary: str | None = None
+    order_value: int | None = Field(default=None, ge=0)
+    address_short: str | None = None
+    scheduled_slot: str | None = None
+    brand_name: str | None = None
+
+
 class OrderResponse(BaseModel):
     """Full order record returned by the API."""
 

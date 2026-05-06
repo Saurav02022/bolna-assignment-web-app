@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, PhoneOutgoing, Eye } from "lucide-react";
+import { Eye, Loader2, Pencil, PhoneOutgoing, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -13,14 +13,23 @@ type Props = {
   isVerifying: boolean;
   onVerify: (orderId: string) => void;
   onView: (orderId: string) => void;
+  onEdit: (orderId: string) => void;
+  onDelete: (orderId: string) => void;
 };
 
-export function Row({ order, isVerifying, onVerify, onView }: Props) {
+export function Row({
+  order,
+  isVerifying,
+  onVerify,
+  onView,
+  onEdit,
+  onDelete,
+}: Props) {
   const canVerify =
     order.status === "pending_verification" ||
     order.status === "needs_followup" ||
     order.status === "unreachable" ||
-    order.status === "verification_failed";
+    order.status === "call_failed";
 
   return (
     <TableRow>
@@ -34,7 +43,7 @@ export function Row({ order, isVerifying, onVerify, onView }: Props) {
         <StatusBadge status={order.status} />
       </TableCell>
       <TableCell>
-        <div className="flex items-center justify-end gap-1">
+        <div className="flex flex-wrap items-center justify-end gap-1">
           <Button
             type="button"
             size="sm"
@@ -47,6 +56,26 @@ export function Row({ order, isVerifying, onVerify, onView }: Props) {
               <PhoneOutgoing aria-hidden />
             )}
             Verify
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onEdit(order.id)}
+            aria-label={`Edit order ${order.id}`}
+          >
+            <Pencil aria-hidden />
+            Edit
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onDelete(order.id)}
+            aria-label={`Delete order ${order.id}`}
+          >
+            <Trash2 aria-hidden />
+            Delete
           </Button>
           <Button
             type="button"

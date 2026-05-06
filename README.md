@@ -437,6 +437,8 @@ High-signal routes for reviewers (full detail in OpenAPI **`/docs`** when the ba
 | `GET` | `/health` | Liveness / CI smoke |
 | `GET` | `/orders` | Paginated list (shape in orders router) |
 | `POST` | `/orders` | Create order (demo / ops) |
+| `PATCH` | `/orders/{id}` | Update customer / product fields (Bolna-derived fields untouched) |
+| `DELETE` | `/orders/{id}` | Remove order + linked call docs |
 | `GET` | `/orders/{id}` | Order + last call snapshot |
 | `POST` | `/orders/{id}/verify` | Trigger Bolna outbound call |
 | `POST` | `/orders/{id}/refresh` | Pull latest Bolna execution + reconcile |

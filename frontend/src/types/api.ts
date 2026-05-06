@@ -13,7 +13,7 @@ export type OrderStatus =
   | "cancelled"
   | "needs_followup"
   | "unreachable"
-  | "verification_failed";
+  | "call_failed";
 
 export type OutcomeTag =
   | "confirmed"
@@ -46,9 +46,22 @@ export type OrderResponse = {
   updated_at: string;
 };
 
+export type OrderCreateInput = {
+  customer_name: string;
+  phone: string;
+  product_summary: string;
+  order_value: number;
+  address_short: string;
+  scheduled_slot: string;
+  brand_name?: string;
+};
+
+/** Fields allowed on PATCH `/orders/:id`. */
+export type OrderUpdateInput = Partial<OrderCreateInput>;
+
 export type OrderListResponse = {
   items: OrderResponse[];
-  count: number;
+  total: number;
 };
 
 export type CallStatus =

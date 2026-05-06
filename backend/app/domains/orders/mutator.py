@@ -6,6 +6,18 @@ from uuid import uuid4
 
 from app.domains.orders.schemas import OrderCreate, OrderStatus
 
+ORDER_PATCHABLE_FIELDS = frozenset(
+    {
+        "customer_name",
+        "phone",
+        "product_summary",
+        "order_value",
+        "address_short",
+        "scheduled_slot",
+        "brand_name",
+    }
+)
+
 OUTCOME_TO_STATUS: dict[str, OrderStatus] = {
     "confirmed": OrderStatus.ship_approved,
     "address_correction": OrderStatus.address_correction_requested,
@@ -40,6 +52,21 @@ def new_order_record(payload: OrderCreate, *, now: datetime, order_id: str | Non
         "created_at": now,
         "updated_at": now,
     }
+
+
+def apply_order_customer_patch(
+    order: dict[str, Any],
+    *,
+    patch: dict[str, Any],
+    now: datetime,
+) -> dict[str, Any]:
+    """Merge whitelist customer/ops fields; leaves status + Bolna snapshots untouched."""
+    merged = {**order}
+    for key, val in patch.items():
+        if key in ORDER_PATCHABLE_FIELDS:
+            merged[key] = val
+    merged["updated_at"] = now
+    return merged
 
 
 def mark_verifying(order: dict[str, Any], *, call_id: str, now: datetime) -> dict[str, Any]:

@@ -16,11 +16,13 @@ type Props = {
   verifyingOrderId: string | null;
   onVerify: (orderId: string) => void;
   onView: (orderId: string) => void;
+  onEdit: (orderId: string) => void;
+  onDelete: (orderId: string) => void;
 };
 
-export function List({ orders, verifyingOrderId, onVerify, onView }: Props) {
+export function List({ orders, verifyingOrderId, onVerify, onView, onEdit, onDelete }: Props) {
   return (
-    <Card className="overflow-hidden p-0">
+    <Card className="overflow-hidden overflow-x-auto p-0">
       <Table>
         <TableHeader>
           <UITableRow>
@@ -29,7 +31,7 @@ export function List({ orders, verifyingOrderId, onVerify, onView }: Props) {
             <TableHead>Product</TableHead>
             <TableHead className="text-right">Value</TableHead>
             <TableHead className="w-[180px]">Status</TableHead>
-            <TableHead className="w-[200px] text-right">Actions</TableHead>
+            <TableHead className="w-[300px] text-right">Actions</TableHead>
           </UITableRow>
         </TableHeader>
         <TableBody>
@@ -40,6 +42,8 @@ export function List({ orders, verifyingOrderId, onVerify, onView }: Props) {
               isVerifying={verifyingOrderId === order.id}
               onVerify={onVerify}
               onView={onView}
+              onEdit={onEdit}
+              onDelete={onDelete}
             />
           ))}
         </TableBody>

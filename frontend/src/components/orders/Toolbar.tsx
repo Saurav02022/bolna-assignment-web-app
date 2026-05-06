@@ -1,4 +1,4 @@
-import { RefreshCw } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
@@ -6,9 +6,10 @@ type Props = {
   totalCount: number;
   isRefreshing: boolean;
   onRefreshAll: () => void;
+  onNewOrder: () => void;
 };
 
-export function Toolbar({ totalCount, isRefreshing, onRefreshAll }: Props) {
+export function Toolbar({ totalCount, isRefreshing, onRefreshAll, onNewOrder }: Props) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
@@ -18,7 +19,12 @@ export function Toolbar({ totalCount, isRefreshing, onRefreshAll }: Props) {
         </p>
       </div>
       <div className="flex items-center gap-2">
+        <Button type="button" size="sm" onClick={onNewOrder}>
+          <Plus aria-hidden />
+          New order
+        </Button>
         <Button
+          type="button"
           variant="outline"
           size="sm"
           onClick={onRefreshAll}

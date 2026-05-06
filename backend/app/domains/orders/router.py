@@ -1,9 +1,9 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 
 from app.core.deps import get_order_service
-from app.domains.orders.schemas import OrderCreate, OrderListResponse, OrderResponse
+from app.domains.orders.schemas import OrderCreate, OrderListResponse, OrderResponse, OrderUpdate
 from app.domains.orders.service import OrderService
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -43,3 +43,29 @@ async def get_order(
     svc: Annotated[OrderService, Depends(get_order_service)],
 ) -> OrderResponse:
     return await svc.get_order(order_id)
+
+
+@router.patch(
+    "/{order_id}",
+    response_model=OrderResponse,
+    summary="Update editable order fields",
+)
+async def patch_order(
+    order_id: str,
+    patch: OrderUpdate,
+    svc: Annotated[OrderService, Depends(get_order_service)],
+) -> OrderResponse:
+    return await svc.update_order(order_id, patch)
+
+
+@router.delete(
+    "/{order_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete an order and its linked calls",
+)
+async def delete_order(
+    order_id: str,
+    svc: Annotated[OrderService, Depends(get_order_service)],
+) -> Response:
+    await svc.delete_order(order_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

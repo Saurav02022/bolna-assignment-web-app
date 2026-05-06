@@ -3,9 +3,9 @@
 from datetime import datetime, timezone
 
 from app.core.exceptions import AppError
-from app.domains.orders.mutator import new_order_record
+from app.domains.orders.mutator import apply_order_customer_patch, new_order_record
 from app.domains.orders.repository import OrderRepository
-from app.domains.orders.schemas import OrderCreate, OrderListResponse, OrderResponse
+from app.domains.orders.schemas import OrderCreate, OrderListResponse, OrderResponse, OrderUpdate
 
 
 class OrderNotFound(AppError):
@@ -37,3 +37,28 @@ class OrderService:
         if record is None:
             raise OrderNotFound(order_id)
         return OrderResponse.model_validate(record)
+
+    async def update_order(self, order_id: str, patch: OrderUpdate) -> OrderResponse:
+        filtered = patch.model_dump(exclude_unset=True)
+        if not filtered:
+            raise AppError(
+                message="At least one updatable field is required.",
+                code="EMPTY_ORDER_PATCH",
+                status_code=422,
+            )
+        existing = await self._repo.get(order_id)
+        if existing is None:
+            raise OrderNotFound(order_id)
+        merged = apply_order_customer_patch(
+            existing,
+            patch=filtered,
+            now=datetime.now(timezone.utc),
+        )
+        saved = await self._repo.replace(merged)
+        return OrderResponse.model_validate(saved)
+
+    async def delete_order(self, order_id: str) -> None:
+        existing = await self._repo.get(order_id)
+        if existing is None:
+            raise OrderNotFound(order_id)
+        await self._repo.delete(order_id)
